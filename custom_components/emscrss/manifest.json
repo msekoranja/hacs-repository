@@ -1,17 +1,18 @@
 {
   "domain": "emscrss",
   "name": "EMSC Earthquake RSS Feed",
-  "version": "1.2",
-  "documentation": "https://github.com/msekoranja/emsc-hacs-repository",
-  "issue_tracker": "https://github.com/msekoranja/emsc-hacs-repository/issues",
-  "dependencies": [],
-  "config_flow": false,
   "codeowners": [
     "@msekoranja"
   ],
+  "config_flow": false,
+  "dependencies": [],
+  "documentation": "https://github.com/msekoranja/emsc-hacs-repository",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/msekoranja/emsc-hacs-repository/issues",
   "requirements": [
     "geopy>=2.1",
     "python-dateutil>=2.8.0"
   ],
-  "iot_class": "cloud_polling"
+  "version": "1.2"
 }
