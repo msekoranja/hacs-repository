@@ -1,12 +1,16 @@
 """Sensor platform for emscrss."""
-from georss_client.xml_parser import feed
 from .const import DEFAULT_NAME, DOMAIN, ICON, SENSOR
 
-from datetime import timedelta
+from dateutil import tz
+from datetime import timedelta, datetime
+
 import logging
 
-from georss_client import UPDATE_OK, UPDATE_OK_NO_DATA
-from georss_emsc_csem_earthquakes_client import EMSCEarthquakesFeed
+import json
+from geopy import distance
+import urllib.request
+from urllib.error import HTTPError
+
 import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA
@@ -16,7 +20,6 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_RADIUS,
     CONF_URL,
-    LENGTH_KILOMETERS,
 )
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
@@ -26,7 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 CONF_MAGNITUDE = "magnitude"
 CONF_AGE = "age"
 
-DEFAULT_URL = "https://www.emsc-csem.org/service/rss/rss.php?typ=emsc"
+DEFAULT_URL = "https://www.emsc-csem.org/service/api/1.6/get.geojson"
 DEFAULT_RADIUS_IN_KM = 300.0
 DEFAULT_MAGNITUDE = 3.0
 DEFAULT_AGE_HOURS = 24
@@ -55,21 +58,23 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     radius_in_km = config.get(CONF_RADIUS)
     magnitude = config.get(CONF_MAGNITUDE)
     age = timedelta(hours=config.get(CONF_AGE))
+    utc_offset = hass.config.time_zone
 
     _LOGGER.debug(
-        "latitude=%s, longitude=%s, url=%s, radius=%s, magintude=%s, age=%s",
+        "latitude=%s, longitude=%s, url=%s, radius=%s, magintude=%s, age=%s, utc_offset=%s",
         latitude,
         longitude,
         url,
         radius_in_km,
         magnitude,
         age,
+        utc_offset,
     )
 
     # Create all sensors based on categories.
     devices = []
     device = EMSCRSSServiceSensor(
-        name, (latitude, longitude), url, radius_in_km, magnitude, age
+        name, (latitude, longitude), url, radius_in_km, magnitude, age, utc_offset
     )
     devices.append(device)
     add_entities(devices, True)
@@ -78,19 +83,18 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 class EMSCRSSServiceSensor(Entity):
     """Representation of a Sensor."""
 
-    def __init__(self, service_name, coordinates, url, radius, magnitude, age):
+    def __init__(self, service_name, coordinates, url, radius, magnitude, age, utc_offset):
         """Initialize the sensor."""
         self._service_name = service_name
+        self._coordinates = coordinates
+        self._radius = radius
+        self._magnitude = magnitude
+        self._utc_offset = utc_offset
+        self._url = url
         self._state = None
         self._state_attributes = None
 
-        self._feed = EMSCEarthquakesFeed(
-            coordinates,
-            url,
-            filter_radius=radius,
-            filter_minimum_magnitude=magnitude,
-            filter_timespan=age,
-        )
+        self._feed = None
 
     @property
     def name(self):
@@ -119,34 +123,39 @@ class EMSCRSSServiceSensor(Entity):
 
     def update(self):
         """Update this sensor from the EMSC service."""
-
-        status, feed_entries = self._feed.update()
-        if status == UPDATE_OK:
-            _LOGGER.debug(
-                "Adding events to sensor %s: %s", self.entity_id, feed_entries
-            )
-            self._state = len(feed_entries)
-            # And now compute the attributes from the filtered events.
+        try:
+            from_zone = tz.gettz('UTC')
+            to_zone = tz.gettz(self._utc_offset)
+            contents = urllib.request.urlopen(self._url).read()
+            geojson = json.loads(contents)
             data = {}
             entries = []
-            for entry in feed_entries:
-                feed_entry = {}
-                feed_entry["title"] = entry.title
-                feed_entry["magnitude"] = entry.magnitude
-                feed_entry["time"] = entry.time
-                feed_entry["distance"] = round(entry.distance_to_home, 0)
-                feed_entry["link"] = entry.link
-                entries.append(feed_entry)
+            for leaf in geojson['features']:
+                item = leaf['properties']
+                distance_to = round(distance.distance((self._coordinates[0], self._coordinates[1]), (item['location']["lat"], item['location']["lon"])).km)
+                if distance_to < self._radius and item['magnitude']['mag'] >= self._magnitude:
+                    feed_entry = {}
+                    feed_entry["title"] = item['place']['region']
+                    feed_entry["magnitude"] = item['magnitude']['mag']
+                    feed_entry["time"] = datetime.fromtimestamp(float(item['time']['time'])).replace(tzinfo=from_zone).astimezone(to_zone).isoformat()
+                    feed_entry["distance"] = distance_to
+                    feed_entry["link"] = item['url']
+                    if len(item['maps']) > 0:
+                        if item['maps'].get('seismicity'):
+                            feed_entry['imglink'] = item['maps']['seismicity']
+                        elif item['maps'].get('intensity'):
+                            feed_entry['imglink'] = item['maps']['intensity']
+                        else:
+                            feed_entry['imglink'] = ''
+                    else:
+                        feed_entry['imglink'] = ''
+                    entries.append(feed_entry)
             data["earthquakes"] = entries
+            self._state = len(data["earthquakes"])
             self._state_attributes = data
-        elif status == UPDATE_OK_NO_DATA:
-            _LOGGER.debug("Update successful, but no data received from %s", self._feed)
-            # Don't change the state or state attributes.
-        else:
+        except HTTPError as err:
             _LOGGER.warning(
-                "Update not successful, no data received from %s", self._feed
+                "Update not successful %s", err
             )
-            # If no events were found due to an error then just set state to
-            # zero.
             self._state = 0
             self._state_attributes = {}

@@ -1,0 +1,14 @@
+# https://www.home-assistant.io/integrations/default_config/
+default_config:
+
+# https://www.home-assistant.io/integrations/logger/
+logger:
+  default: info
+  logs:
+    custom_components.emscrss: debug
+
+sensor:
+  - platform: emscrss
+    name: Earthquakes
+    radius: 9000
+    magnitude: 0.1
